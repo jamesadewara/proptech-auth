@@ -12,6 +12,7 @@ from .serializers import (
 )
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import authenticate
 from .models import User
 
@@ -100,21 +101,66 @@ class InviteAcceptView(generics.CreateAPIView):
         }, status=status.HTTP_201_CREATED)
         
 class RemoveStaffView(generics.DestroyAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsTenantOwner]  # Only owners can remove staff
     queryset = User.objects.all()
 
     def delete(self, request, *args, **kwargs):
-        user_id = kwargs.get("user_id")
-        target_user = User.objects.filter(id=user_id, tenant=request.tenant).first()
+        if not request.tenant:
+            return Response(
+                {"error": "Tenant context required. Provide X-Tenant-Slug header."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Try to get user_id from URL params first, then request body
+        user_id = request.query_params.get("user_id") or request.data.get("user_id")
+        
+        if not user_id:
+            return Response(
+                {"error": "user_id is required either in URL (?user_id=...) or request body"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            target_user = User.objects.filter(
+                id=user_id, 
+                tenant=request.tenant
+            ).first()
+        except (ValueError, TypeError):
+            return Response(
+                {"error": f"Invalid user_id format: {user_id}"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         if not target_user:
-            return Response({"error": "User not found or not part of your tenant."}, status=404)
+            return Response(
+                {"error": f"User with id {user_id} not found in tenant {request.tenant.slug}"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
 
         if target_user.role == 'OWNER':
-            return Response({"error": "You cannot remove the owner account."}, status=403)
+            return Response(
+                {"error": "You cannot remove the owner account."}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
 
+        if target_user.id == request.user.id:
+            return Response(
+                {"error": "You cannot remove your own account. Use the delete account endpoint instead."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        email = target_user.email
+        tenant_slug = request.tenant.slug
         target_user.delete()
-        return Response({"success": f"{target_user.email} removed successfully."}, status=200)
+        
+        return Response({
+            "success": f"User {email} removed successfully from tenant {tenant_slug}.",
+            "detail": {
+                "removed_user_id": user_id,
+                "removed_user_email": email,
+                "tenant": tenant_slug
+            }
+        }, status=status.HTTP_200_OK)
 
 # --- /me endpoint ---
 class MeView(generics.RetrieveAPIView):
@@ -125,17 +171,34 @@ class MeView(generics.RetrieveAPIView):
     def get(self, request, *args, **kwargs):
         return Response(self.get_serializer(request.user).data)
 
-
 class LogoutView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
+        # Try to obtain a refresh token from request body first, then from Authorization header.
+        token_str = None
+        if isinstance(request.data, dict) and request.data.get("refresh"):
+            token_str = request.data.get("refresh")
+        else:
+            auth = request.META.get("HTTP_AUTHORIZATION", "")
+            if auth.startswith("Bearer "):
+                token_str = auth.split(" ", 1)[1].strip()
+
+        if not token_str:
+            return Response(
+                {"error": "No token provided. Send refresh token in body as {'refresh': '<token>'} or include it in Authorization header."},
+                status=400,
+            )
+
         try:
-            refresh_token = request.data["refresh"]
-            token = RefreshToken(refresh_token)
+            token = RefreshToken(token_str)
+            # blacklist() requires the blacklist app to be installed; this will raise TokenError for invalid tokens.
             token.blacklist()
             return Response({"detail": "Logged out"})
+        except TokenError:
+            return Response({"error": "Invalid or unsupported token. Provide a refresh token to log out."}, status=400)
         except Exception:
+            return Response({"error": "Could not process token."}, status=400)
             return Response({"error": "Invalid token"}, status=400)
         
 class PasswordForgotView(generics.CreateAPIView):
@@ -165,6 +228,32 @@ class DeleteAccountView(generics.DestroyAPIView):
 
     def delete(self, request, *args, **kwargs):
         user = request.user
+        
+        # Cannot delete if no tenant context (except OWNER)
+        if not request.tenant and user.role != 'OWNER':
+            return Response(
+                {"error": "Tenant context required. Provide X-Tenant-Slug header."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # For non-owners, verify tenant matches
+        if user.role != 'OWNER' and user.tenant != request.tenant:
+            return Response(
+                {"error": "Account does not belong to the provided tenant."}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Owners cannot be deleted through this endpoint
+        if user.role == 'OWNER':
+            return Response(
+                {"error": "Owner accounts cannot be deleted through this endpoint."}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         user_email = user.email
+        tenant_slug = user.tenant.slug
         user.delete()
-        return Response({"message": f"Account {user_email} deleted successfully."}, status=200)
+        
+        return Response({
+            "message": f"Account {user_email} deleted successfully from tenant {tenant_slug}."
+        }, status=status.HTTP_200_OK)

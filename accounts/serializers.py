@@ -267,13 +267,22 @@ class PasswordResetSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, min_length=6)
 
     def validate(self, attrs):
-        try:
-            token_obj = PasswordResetToken.objects.get(token=attrs['token'])
-        except PasswordResetToken.DoesNotExist:
+        # Use filter().first() instead of get() to avoid MultipleObjectsReturned
+        token_obj = PasswordResetToken.objects.filter(token=attrs['token']).first()
+        
+        if not token_obj:
             raise serializers.ValidationError("Invalid or expired token.")
 
         if not token_obj.is_valid():
             raise serializers.ValidationError("Token expired.")
+            
+        # Ensure we have tenant context if needed
+        request = self.context.get('request')
+        tenant = getattr(request, 'tenant', None)
+        
+        # If tenant header provided, verify token belongs to user in that tenant
+        if tenant and token_obj.user.tenant != tenant:
+            raise serializers.ValidationError("Token does not match the provided tenant context.")
 
         attrs['token_obj'] = token_obj
         return attrs
