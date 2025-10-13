@@ -148,7 +148,7 @@ AUTH_USER_MODEL = 'accounts.User'
 
 AUTHENTICATION_BACKENDS = [
     'accounts.backends.TenantAwareBackend',
-    'django.contrib.auth.backends.ModelBackend',
+    # Removed ModelBackend to prevent non-tenant-aware authentication
 ]
 
 INVITE_EXPIRY_HOURS = config("INVITE_EXPIRY_HOURS", default=48, cast=int)
