@@ -41,7 +41,6 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'drf_spectacular',
-    'drf_spectacular_sidecar',
     'rest_framework',
     'corsheaders',
     'rest_framework_simplejwt.token_blacklist',
@@ -50,12 +49,12 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
+    'accounts.middleware.TenantMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -128,7 +127,9 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 
-STATICFILES_DIRS = [BASE_DIR / "static"]
+STATICFILES_DIRS = [
+    BASE_DIR / 'static',
+]
 
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
@@ -145,6 +146,13 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'accounts.User'
 
+AUTHENTICATION_BACKENDS = [
+    'accounts.backends.TenantAwareBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+INVITE_EXPIRY_HOURS = config("INVITE_EXPIRY_HOURS", default=48, cast=int)
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=config("ACCESS_TOKEN_LIFETIME", default=15, cast=int)),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=config("REFRESH_TOKEN_LIFETIME", default=7, cast=int)),
@@ -154,20 +162,20 @@ SIMPLE_JWT = {
 }
 
 REST_FRAMEWORK = {
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema'
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
 }
 
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'Proptech Auth API',
-    'DESCRIPTION': 'Authentication & Authorization web service apis, which provides auth services to real estate owners and thier clients.',
-    'VERSION': '1.0.0',
-    'SERVE_INCLUDE_SCHEMA': False,
-    'SWAGGER_UI_DIST': 'SIDECAR',
-    'SWAGGER_UI_FAVICON_HREF': 'SIDECAR',
-    'REDOC_DIST': 'SIDECAR',
+    "TITLE": "PropTech Auth Service",
+    "DESCRIPTION": "Handles authentication and authorization for PropTech tenants",
+    "VERSION": "1.0.0",
+    'SERVE_INCLUDE_SCHEMA': False
 }
 
 from .juzzmin import JAZZMIN_SETTINGS
