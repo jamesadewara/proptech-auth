@@ -7,6 +7,7 @@ from datetime import timedelta
 from django.utils import timezone
 from django.conf import settings 
 from rest_framework import generics, permissions, status, serializers as drf_serializers
+from django.db.models import Q
 
 User = get_user_model()
 INVITE_EXPIRY_HOURS = settings.INVITE_EXPIRY_HOURS or ""
@@ -31,25 +32,119 @@ class RegisterTenantSerializer(serializers.Serializer):
 # --- Tenant-aware login using tenant from middleware/header ---
 class TenantTokenObtainPairSerializer(BaseTokenObtainPairSerializer):
     """
-    Validate credentials against tenant attached to request (via middleware or header).
+    Tenant-aware login using username and password.
+    - OWNER: no tenant header required.
+    - STAFF / AGENT / GUEST: tenant header required.
     """
+
     def validate(self, attrs):
-        request = self.context.get('request')
-        username = attrs.get(self.username_field)
-        password = attrs.get('password')
-        tenant = getattr(request, 'tenant', None)
-        user = authenticate(request=request, username=username, password=password, tenant=tenant)
-        if user is None:
-            # use DRF serializer ValidationError so DRF will return status 400 with details
-            raise drf_serializers.ValidationError("No active account found for given credentials and tenant.")
-        # set the authenticated user so the parent serializer uses it
-        self.user = user
-        data = super().validate(attrs)  # this will generate tokens for self.user
-        data['user_id'] = str(user.id)
-        data['tenant'] = user.tenant.slug if user.tenant else None
-        data['role'] = user.role
-        return data
-    
+        request = self.context.get("request")
+        # Prefer an explicit 'username' field from the client. Do NOT rely on
+        # self.username_field because in this project USERNAME_FIELD is 'email'.
+        raw_username = attrs.get('username')
+        # normalize username to include leading '@' like the UserManager does
+        if raw_username and isinstance(raw_username, str):
+            if not raw_username.startswith('@'):
+                raw_username = f"@{raw_username}"
+            username = raw_username.lower()
+        else:
+            username = None
+
+        email = attrs.get("email")
+        if email and isinstance(email, str):
+            email = email.lower()
+
+        password = attrs.get("password")
+        tenant = getattr(request, "tenant", None)
+        # Defensive lookups: avoid using .get() which can raise MultipleObjectsReturned
+        # We search for a matching user based on username/email and tenant context.
+        qs = User.objects.all()
+        # If a tenant is present (header/middleware), restrict to it
+        if tenant:
+            qs = qs.filter(tenant=tenant)
+
+        # Both username and email are expected from the client; filter accordingly
+        if username:
+            qs = qs.filter(username__iexact=username)
+        if email:
+            qs = qs.filter(email__iexact=email)
+
+        # If we didn't find any user in the tenant context, we need to decide whether
+        # to allow OWNER lookup across tenants (owner may omit tenant header) or to fail.
+        user = None
+        count = qs.count()
+        if count == 1:
+            user = qs.first()
+        elif count > 1:
+            # ambiguous: multiple matches within the same tenant (shouldn't happen due to constraints)
+            raise drf_serializers.ValidationError("Multiple accounts matched the provided credentials. Contact support.")
+        else:
+            # no result within the provided tenant (or no tenant provided)
+            # Try owner-bypass: owners are allowed to login without tenant header
+            possible = User.objects.filter(username__iexact=username, email__iexact=email)
+            if possible.exists():
+                # If there's exactly one and it's an OWNER, allow it
+                if possible.count() == 1 and possible.first().role == 'OWNER':
+                    user = possible.first()
+                    # set tenant to owner's tenant for downstream authenticate
+                    tenant = user.tenant
+                else:
+                    # Either multiple users across tenants (ambiguous) or non-owner exists but tenant missing
+                    if not tenant:
+                        raise drf_serializers.ValidationError(
+                            "Tenant header (X-Tenant-Slug) required for non-owner users or ambiguous accounts."
+                        )
+                    raise drf_serializers.ValidationError(f"No user found for tenant {tenant}.")
+
+        # By now we should have a candidate user or have raised a validation error
+        if not user:
+            raise drf_serializers.ValidationError("No user found with the supplied credentials.")
+
+        # Determine if tenant header is required for this user
+        if user.role != 'OWNER':
+            if not tenant:
+                raise drf_serializers.ValidationError(
+                    "Tenant header (X-Tenant-Slug) required for non-owner users."
+                )
+            if user.tenant != tenant:
+                raise drf_serializers.ValidationError(
+                    "Unauthorized: account does not belong to the provided tenant."
+                )
+        else:
+            # For owner, ensure tenant variable represents owner's tenant
+            tenant = user.tenant
+        # raise serializers.ValidationError(tenant, user.tenant, user.role, "IS IT WORKING")
+
+        # Authenticate using TenantAwareBackend
+        auth_user = authenticate(
+            request=request,
+            username=username,
+            email=email,
+            password=password,
+            tenant=tenant
+        )
+        if not auth_user:
+            raise drf_serializers.ValidationError("Invalid credentials.")
+
+        # We have an authenticated user. Avoid calling super().validate(attrs)
+        # because the base implementation may run a global `.get()` on
+        # USERNAME_FIELD (email) which can raise MultipleObjectsReturned
+        # in multi-tenant setups. Instead, create tokens directly.
+        self.user = auth_user
+
+        # Use SimpleJWT's token creation helper
+        token = self.get_token(self.user)
+        refresh = str(token)
+        access = str(token.access_token)
+
+        return {
+            'refresh': refresh,
+            'access': access,
+            'user_id': str(self.user.id),
+            'tenant': self.user.tenant.slug if self.user.tenant else None,
+            'role': self.user.role,
+        }
+
 class InviteCreateSerializer(serializers.Serializer):
     email = serializers.EmailField()
     role = serializers.ChoiceField(choices=User.ROLE_CHOICES)
