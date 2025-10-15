@@ -2,6 +2,7 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiResponse
 from rest_framework import generics, permissions, status, serializers as drf_serializers
 from .serializers import (
+    GoogleSocialLoginSerializer,
     PasswordForgotSerializer,
     PasswordResetSerializer,
     RegisterTenantSerializer,
@@ -14,7 +15,11 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import authenticate
-from .models import User
+from .models import Tenant, User
+from rest_framework.views import APIView
+import requests
+from django.conf import settings
+from rest_framework.permissions import AllowAny
 
 # --- helper permission ---
 class IsTenantOwner(permissions.BasePermission):
@@ -44,6 +49,36 @@ class RegisterTenantView(generics.CreateAPIView):
             'access': str(token.access_token),
             'refresh': str(token)
         }, status=status.HTTP_201_CREATED)
+
+
+class GoogleSocialLoginView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = GoogleSocialLoginSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.serializer_class(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        user:User = serializer.validated_data["user"]
+        tenant:Tenant = serializer.validated_data["tenant"]
+        created = serializer.validated_data["created"]
+
+        refresh = RefreshToken.for_user(user)
+
+        return Response({
+            "tenant": tenant.slug,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "username": user.username,
+                "role": user.role,
+                "profile_picture": user.profile_picture.url if user.profile_picture else None,
+                "tenant": tenant.slug
+            },
+            "created": created,
+            "access": str(refresh.access_token),
+            "refresh": str(refresh)
+        }, status=status.HTTP_200_OK)
 
 class TenantTokenObtainPairView(TokenObtainPairView):
     """

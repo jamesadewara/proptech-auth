@@ -64,6 +64,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField()
     username = models.CharField(max_length=50, validators=[username_validator], unique=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='GUEST')
+    profile_picture = models.ImageField(upload_to='profile_pics/', null=True, blank=True)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)  # site admin (not tenant owner)
     date_joined = models.DateTimeField(auto_now_add=True)

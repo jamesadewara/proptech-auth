@@ -8,6 +8,7 @@ from django.utils import timezone
 from django.conf import settings 
 from rest_framework import generics, permissions, status, serializers as drf_serializers
 from django.db.models import Q
+import requests 
 
 User = get_user_model()
 INVITE_EXPIRY_HOURS = settings.INVITE_EXPIRY_HOURS or ""
@@ -28,7 +29,161 @@ class RegisterTenantSerializer(serializers.Serializer):
         owner = User.objects.create_user(email=validated_data['email'],username=f"@{validated_data['email'].split('@')[0]}", password=validated_data['password'], tenant=tenant, role='OWNER')
         # owner is not is_staff sitewide; tenant owner role controls tenant actions
         return owner
-    
+
+
+class GoogleSocialLoginSerializer(serializers.Serializer):
+    credential = serializers.CharField(required=True)
+    name = serializers.CharField(required=False)
+    slug = serializers.CharField(required=False)
+
+    def _make_unique_tenant_slug(self, base: str) -> str:
+        slug_base = base.lower()
+        slug = slug_base
+        counter = 1
+        while Tenant.objects.filter(slug=slug).exists():
+            slug = f"{slug_base}{counter}"
+            counter += 1
+        return slug
+
+    def _make_unique_username(self, base: str) -> str:
+        # ensure leading '@' and lowercase
+        username_base = f"@{base.lstrip('@').lower()}"
+        username = username_base
+        counter = 1
+        while User.objects.filter(username=username).exists():
+            username = f"{username_base}{counter}"
+            counter += 1
+        return username
+
+    def create_owner(self, email, name=None, picture=None):
+        """
+        Create a new Tenant + OWNER user.
+        Uses self.initial_data['slug'] or derived slug from email prefix.
+        Uses self.initial_data['name'] or provided name for tenant name.
+        """
+        # prefer explicit slug if given
+        requested_slug = (self.initial_data.get("slug") or "").strip()
+        slug_base = requested_slug or email.split("@")[0]
+        slug = self._make_unique_tenant_slug(slug_base)
+
+        tenant_name = self.initial_data.get("name") or name or slug_base
+        tenant = Tenant.objects.create(name=tenant_name, slug=slug)
+
+        username_base = slug_base  # owner username based on tenant slug/email prefix
+        username = self._make_unique_username(username_base)
+
+        owner = User.objects.create_user(
+            email=email,
+            username=username,
+            tenant=tenant,
+            role="OWNER",
+        )
+
+        # attach picture if provided (assumes profile_picture is a CharField / URLField or similar)
+        if picture:
+            try:
+                owner.profile_picture = picture
+                owner.save(update_fields=["profile_picture"])
+            except Exception:
+                # if saving profile_picture fails for any reason, ignore but keep owner created
+                pass
+
+        return tenant, owner
+
+    def create_guest(self, tenant, email, name=None, picture=None):
+        """
+        Create a new guest/staff/agent user under an existing tenant.
+        Ensures username uniqueness globally.
+        """
+        username_candidate = email.split("@")[0]
+        username = self._make_unique_username(username_candidate)
+
+        user, created = User.objects.get_or_create(
+            email=email,
+            tenant=tenant,
+            defaults={
+                "username": username,
+                "role": "GUEST",
+            },
+        )
+
+        # update profile/name/picture for existing users if needed
+        updated_fields = []
+        if name and getattr(user, "full_name", None) != name:
+            # set attribute only if it exists on the model
+            if hasattr(user, "full_name"):
+                user.full_name = name
+                updated_fields.append("full_name")
+        if picture and getattr(user, "profile_picture", None) != picture:
+            user.profile_picture = picture
+            updated_fields.append("profile_picture")
+        if updated_fields:
+            user.save(update_fields=updated_fields)
+
+        return user
+
+    def validate(self, attrs):
+        credential = attrs.get("credential")
+        request = self.context.get("request")
+        # prefer middleware's request.tenant if set, fallback to header
+        tenant_from_mw = getattr(request, "tenant", None)
+        tenant_slug_header = request.headers.get("X-Tenant-Slug")
+        # prefer middleware-resolved tenant (more reliable)
+        tenant_slug = tenant_from_mw.slug if tenant_from_mw else (tenant_slug_header or None)
+
+        # Verify Google ID token with correct parameter name (id_token)
+        verify_url = settings.GOOGLE_OAUTH2_VERIFY_URL  # expected to be "https://oauth2.googleapis.com/tokeninfo"
+        response = requests.get(verify_url, params={"id_token": credential})
+        data = response.json()
+
+        if response.status_code != 200 or "error" in data:
+            raise serializers.ValidationError("Invalid Google token.")
+
+        email = data.get("email")
+        name = data.get("name", "")
+        picture = data.get("picture", "")
+
+        if not email:
+            raise serializers.ValidationError("Google account has no email.")
+
+        # If tenant_slug present -> must be a tenant user (guest/staff/agent)
+        if tenant_slug:
+            # resolve tenant object
+            try:
+                tenant = Tenant.objects.get(slug=tenant_slug)
+            except Tenant.DoesNotExist:
+                raise serializers.ValidationError("Invalid tenant slug.")
+
+            user = self.create_guest(tenant, email, name, picture)
+            attrs.update({"tenant": tenant, "user": user, "created": getattr(user, "_state", None) is None})
+            # note: created flag is handled by client if needed; we set created=False for get_or_create existing
+            return attrs
+
+        # No tenant provided -> owner path MUST be used
+        # If an OWNER already exists with this email -> sign them in
+        existing_owner = User.objects.filter(email__iexact=email, role="OWNER").first()
+        if existing_owner:
+            attrs.update({"tenant": existing_owner.tenant, "user": existing_owner, "created": False})
+            return attrs
+
+        # If no owner exists, create one BUT require name and slug be provided by client
+        provided_name = (self.initial_data.get("name") or "").strip()
+        provided_slug = (self.initial_data.get("slug") or "").strip()
+
+        if not provided_name or not provided_slug:
+            raise serializers.ValidationError(
+                "New owner registration requires 'name' and 'slug' in request body when no tenant header is provided."
+            )
+
+        # Ensure requested slug is not taken by other tenants
+        if Tenant.objects.filter(slug=provided_slug).exists():
+            raise serializers.ValidationError("Requested tenant slug is already taken. Pick another slug.")
+
+        # Create owner and tenant
+        tenant, owner = self.create_owner(email=email, name=provided_name, picture=picture)
+        attrs.update({"tenant": tenant, "user": owner, "created": True})
+        return attrs
+
 # --- Tenant-aware login using tenant from middleware/header ---
 class TenantTokenObtainPairSerializer(BaseTokenObtainPairSerializer):
     """

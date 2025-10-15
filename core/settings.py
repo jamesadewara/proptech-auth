@@ -153,6 +153,9 @@ AUTHENTICATION_BACKENDS = [
 
 INVITE_EXPIRY_HOURS = config("INVITE_EXPIRY_HOURS", default=48, cast=int)
 
+# OAUTH PROVIDER VERIFICATION URL
+GOOGLE_OAUTH2_VERIFY_URL = config("GOOGLE_OAUTH2_VERIFY_URL", cast=str, default="https://oauth2.googleapis.com/tokeninfo")
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=config("ACCESS_TOKEN_LIFETIME", default=15, cast=int)),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=config("REFRESH_TOKEN_LIFETIME", default=7, cast=int)),
