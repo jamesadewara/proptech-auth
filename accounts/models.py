@@ -1,3 +1,4 @@
+import random
 import secrets
 import uuid
 from datetime import timedelta
@@ -47,6 +48,7 @@ class UserManager(BaseUserManager):
     def create_superuser(self, email, username=None, password=None, **extra_fields):
         user = self.create_user(email=email, username=username, password=password, **extra_fields)
         user.is_staff = True
+        user.is_active = True
         user.is_superuser = True
         user.save()
         return user
@@ -65,9 +67,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     username = models.CharField(max_length=50, validators=[username_validator], unique=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='GUEST')
     profile_picture = models.ImageField(upload_to='profile_pics/', null=True, blank=True)
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=False)  # require email verification
     is_staff = models.BooleanField(default=False)  # site admin (not tenant owner)
     date_joined = models.DateTimeField(auto_now_add=True)
+    email_verified = models.BooleanField(default=False)
+    email_otp = models.CharField(max_length=6, blank=True, null=True)
+    otp_expiry = models.DateTimeField(blank=True, null=True)
 
     objects = UserManager()
 
@@ -87,6 +92,27 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return f"{self.username} ({self.email})"
+    
+    def generate_otp(self):
+        """Generate a 6-digit OTP valid for 10 minutes."""
+        self.email_otp = str(random.randint(100000, 999999))
+        self.otp_expiry = timezone.now() + timedelta(minutes=10)
+        self.save(update_fields=['email_otp', 'otp_expiry'])
+        return self.email_otp
+
+    def verify_otp(self, otp):
+        """Verify OTP and clear it if valid."""
+        if (
+            self.email_otp == otp
+            and self.otp_expiry
+            and timezone.now() < self.otp_expiry
+        ):
+            self.email_verified = True
+            self.email_otp = None
+            self.otp_expiry = None
+            self.save(update_fields=['email_verified', 'email_otp', 'otp_expiry'])
+            return True
+        return False
 
 class Invite(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

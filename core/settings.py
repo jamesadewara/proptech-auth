@@ -181,5 +181,15 @@ SPECTACULAR_SETTINGS = {
     'SERVE_INCLUDE_SCHEMA': False
 }
 
+EMAIL_BACKEND = config("EMAIL_BACKEND", cast=str)
+EMAIL_HOST = config("EMAIL_HOST", cast=str)
+EMAIL_PORT = config("EMAIL_PORT", cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", cast=str)
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", cast=str)
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", cast=str)
+
+MAIN_WEBSITE_URL = config("MAIN_WEBSITE_URL", cast=str)
+
 from .juzzmin import JAZZMIN_SETTINGS
 JAZZMIN_SETTINGS = JAZZMIN_SETTINGS

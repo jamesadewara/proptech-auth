@@ -38,7 +38,17 @@ class TenantAwareBackend(ModelBackend):
         elif getattr(request, 'tenant', None):
             tenant_filter['tenant'] = request.tenant
 
-        # Build Q lookup: support lookups by username OR email depending on provided fields
+        # First try to find an owner by email (owners can login without tenant)
+        if email_q:
+            owner = User.objects.filter(
+                email__iexact=email_q,
+                role='OWNER'
+            ).first()
+            
+            if owner and owner.check_password(password) and self.user_can_authenticate(owner):
+                return owner
+
+        # If no owner found or owner auth failed, proceed with regular tenant-aware auth
         qs = User.objects.all()
         if tenant_filter:
             qs = qs.filter(**tenant_filter)

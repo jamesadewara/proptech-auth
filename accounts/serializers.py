@@ -1,6 +1,8 @@
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+
+from accounts.utils.email_utils import send_html_email
 from .models import PasswordResetToken, Tenant, Invite
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer as BaseTokenObtainPairSerializer
 from datetime import timedelta
@@ -194,69 +196,73 @@ class TenantTokenObtainPairSerializer(BaseTokenObtainPairSerializer):
 
     def validate(self, attrs):
         request = self.context.get("request")
-        # Prefer an explicit 'username' field from the client. Do NOT rely on
-        # self.username_field because in this project USERNAME_FIELD is 'email'.
-        raw_username = attrs.get('username')
-        # normalize username to include leading '@' like the UserManager does
+        
+        # Extract credentials
+        username = attrs.get('username', '')
+        password = attrs.get('password', '')
+        email = attrs.get('email', username)  # Username field might contain email
+        
+        # First check if this is an owner account
+        if email:
+            owner = User.objects.filter(email__iexact=email, role='OWNER').first()
+            if owner:
+                # We found an owner, try to authenticate them
+                auth_user = authenticate(request, email=email, password=password)
+                if auth_user:
+                    # Owner authentication successful
+                    refresh = self.get_token(auth_user)
+                    return {
+                        'refresh': str(refresh),
+                        'access': str(refresh.access_token),
+                        'user_id': str(auth_user.id),
+                        'tenant': auth_user.tenant.slug,
+                        'role': auth_user.role,
+                        'is_active': auth_user.is_active,
+                        'email_verified': auth_user.email_verified,
+                    }
+                else:
+                    # Owner exists but password is wrong
+                    raise serializers.ValidationError({
+                        'detail': 'Invalid credentials for owner account'
+                    })
+                    
+        # If we get here, either:
+        # 1. No owner account exists with this email
+        # 2. User is trying to login as non-owner
+        # Proceed with tenant-aware auth
+        tenant = getattr(request, 'tenant', None)
+        if not tenant:
+            raise serializers.ValidationError(
+                "Tenant header is required for non-owner login."
+            )
+        # For non-owner login, we need username/email and tenant
+        raw_username = username
         if raw_username and isinstance(raw_username, str):
             if not raw_username.startswith('@'):
                 raw_username = f"@{raw_username}"
             username = raw_username.lower()
-        else:
-            username = None
-
-        email = attrs.get("email")
+        
         if email and isinstance(email, str):
             email = email.lower()
+            
+        # Attempt authentication with tenant context
+        user = authenticate(
+            request,
+            username=username,
+            email=email,
+            password=password,
+            tenant=tenant
+        )
 
-        password = attrs.get("password")
-        tenant = getattr(request, "tenant", None)
-        # Defensive lookups: avoid using .get() which can raise MultipleObjectsReturned
-        # We search for a matching user based on username/email and tenant context.
-        qs = User.objects.all()
-        # If a tenant is present (header/middleware), restrict to it
-        if tenant:
-            qs = qs.filter(tenant=tenant)
-
-        # Both username and email are expected from the client; filter accordingly
-        if username:
-            qs = qs.filter(username__iexact=username)
-        if email:
-            qs = qs.filter(email__iexact=email)
-
-        # If we didn't find any user in the tenant context, we need to decide whether
-        # to allow OWNER lookup across tenants (owner may omit tenant header) or to fail.
-        user = None
-        count = qs.count()
-        if count == 1:
-            user = qs.first()
-        elif count > 1:
-            # ambiguous: multiple matches within the same tenant (shouldn't happen due to constraints)
-            raise drf_serializers.ValidationError("Multiple accounts matched the provided credentials. Contact support.")
+        # Special handling for owners - they can login without tenant header
+        if user.role == 'OWNER':
+            # For owners, always use their tenant regardless of header
+            tenant = user.tenant
+            # If a tenant header was provided, warn if it doesn't match (but still allow login)
+            if getattr(request, "tenant", None) and request.tenant != user.tenant:
+                print(f"Warning: Owner login with mismatched tenant header. Expected {user.tenant.slug}")
         else:
-            # no result within the provided tenant (or no tenant provided)
-            # Try owner-bypass: owners are allowed to login without tenant header
-            possible = User.objects.filter(username__iexact=username, email__iexact=email)
-            if possible.exists():
-                # If there's exactly one and it's an OWNER, allow it
-                if possible.count() == 1 and possible.first().role == 'OWNER':
-                    user = possible.first()
-                    # set tenant to owner's tenant for downstream authenticate
-                    tenant = user.tenant
-                else:
-                    # Either multiple users across tenants (ambiguous) or non-owner exists but tenant missing
-                    if not tenant:
-                        raise drf_serializers.ValidationError(
-                            "Tenant header (X-Tenant-Slug) required for non-owner users or ambiguous accounts."
-                        )
-                    raise drf_serializers.ValidationError(f"No user found for tenant {tenant}.")
-
-        # By now we should have a candidate user or have raised a validation error
-        if not user:
-            raise drf_serializers.ValidationError("No user found with the supplied credentials.")
-
-        # Determine if tenant header is required for this user
-        if user.role != 'OWNER':
+            # Non-owners must provide correct tenant header
             if not tenant:
                 raise drf_serializers.ValidationError(
                     "Tenant header (X-Tenant-Slug) required for non-owner users."
@@ -265,21 +271,30 @@ class TenantTokenObtainPairSerializer(BaseTokenObtainPairSerializer):
                 raise drf_serializers.ValidationError(
                     "Unauthorized: account does not belong to the provided tenant."
                 )
-        else:
-            # For owner, ensure tenant variable represents owner's tenant
-            tenant = user.tenant
-        # raise serializers.ValidationError(tenant, user.tenant, user.role, "IS IT WORKING")
 
-        # Authenticate using TenantAwareBackend
-        auth_user = authenticate(
-            request=request,
-            username=username,
-            email=email,
-            password=password,
-            tenant=tenant
-        )
+        # Authenticate using TenantAwareBackend with clear error distinction
+        try:
+            auth_user = authenticate(
+                request=request,
+                username=username,
+                email=email,
+                password=password,
+                tenant=tenant
+            )
+        except Exception as e:
+            print(f"Authentication error: {str(e)}")
+            auth_user = None
+
         if not auth_user:
-            raise drf_serializers.ValidationError("Invalid credentials.")
+            if user.role == 'OWNER':
+                raise drf_serializers.ValidationError({
+                    "error": "Owner login failed. Please check your credentials.",
+                    "debug": {
+                        "email": email,
+                        "is_owner": True,
+                        "tenant": tenant.slug if tenant else None
+                    }
+                })
 
         # We have an authenticated user. Avoid calling super().validate(attrs)
         # because the base implementation may run a global `.get()` on
@@ -298,6 +313,15 @@ class TenantTokenObtainPairSerializer(BaseTokenObtainPairSerializer):
             'user_id': str(self.user.id),
             'tenant': self.user.tenant.slug if self.user.tenant else None,
             'role': self.user.role,
+            'is_active': self.user.is_active,
+            'email_verified': self.user.email_verified,
+            'username': self.user.username,
+            'email': self.user.email,
+            'id': str(self.user.id),
+            'is_staff': self.user.is_staff,
+            'is_superuser': self.user.is_superuser,
+            'date_joined': self.user.date_joined,
+            'profile_picture': self.user.profile_picture.url if self.user.profile_picture else None
         }
 
 class InviteCreateSerializer(serializers.Serializer):
@@ -381,8 +405,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id','email','username','role','tenant')
-        read_only_fields = ('id','tenant','role')
+        fields = ('id','email','username','role','tenant','is_active','is_staff','is_superuser','date_joined','email_verified','profile_picture')
+        read_only_fields = ('id','tenant','role','is_active','is_staff','is_superuser','date_joined','email_verified')
 
 class PasswordForgotSerializer(serializers.Serializer):
     email = serializers.EmailField()
@@ -410,6 +434,14 @@ class PasswordForgotSerializer(serializers.Serializer):
     def create(self, validated_data):
         # create one-time token
         token_obj = PasswordResetToken.objects.create(user=self.user)
+        reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token_obj.token}"
+
+        send_html_email(
+            subject="Password Reset Request",
+            to_email=self.user.email,
+            template_name="accounts/email/password_reset_email.html",
+            context={"user": self.user, "reset_url": reset_url},
+        )
         # In production: send email with link. For dev return token.
         return {
             "reset_token": token_obj.token,

@@ -1,6 +1,8 @@
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, OpenApiResponse
 from rest_framework import generics, permissions, status, serializers as drf_serializers
+
+from accounts.utils.email_utils import send_html_email
 from .serializers import (
     GoogleSocialLoginSerializer,
     PasswordForgotSerializer,
@@ -47,7 +49,7 @@ class RegisterTenantView(generics.CreateAPIView):
             'tenant': owner.tenant.slug,
             'user': UserSerializer(owner).data,
             'access': str(token.access_token),
-            'refresh': str(token)
+            'refresh': str(token),
         }, status=status.HTTP_201_CREATED)
 
 
@@ -91,13 +93,40 @@ class TenantTokenObtainPairView(TokenObtainPairView):
         # tenant should be set by TenantMiddleware (or via X-Tenant-Slug header)
         serializer = self.get_serializer(data=request.data)
         serializer.context['request'] = request  # ensure request context is passed
+        
         try:
             serializer.is_valid(raise_exception=True)
         except Exception as e:
-            return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            error_detail = str(e)
+            if hasattr(e, 'detail'):
+                error_detail = e.detail
+            
+            # Check if this is an owner trying to login
+            email = request.data.get('email')
+            if email:
+                try:
+                    potential_owner = User.objects.filter(
+                        email__iexact=email,
+                        role='OWNER'
+                    ).first()
+                    if potential_owner:
+                        return Response({
+                            "error": "Owner login failed. Please check your credentials.",
+                            "debug_info": {
+                                "email_exists": True,
+                                "is_owner": True,
+                                "tenant": potential_owner.tenant.slug if potential_owner.tenant else None,
+                                "detail": error_detail
+                            }
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                except Exception:
+                    pass  # Fail silently and return generic error
+                    
+            return Response({
+                "error": "Invalid credentials. Check your email and password.",
+                "detail": error_detail
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         return Response(serializer.validated_data, status=status.HTTP_200_OK)
 
 
@@ -114,7 +143,17 @@ class InviteCreateView(generics.CreateAPIView):
         invite = serializer.save()
         # Send email in production. For dev, return token/url in response.
         accept_url = f"{request.build_absolute_uri('/')}api/v1/invite/accept/?token={invite.token}"
-        # In production call send_mail(...)
+        send_html_email(
+            subject="You're Invited to Join",
+            to_email=invite.email,
+            template_name="accounts/email/invite_email.html",
+            context={
+                "tenant_name": request.tenant.name,
+                "role": invite.role,
+                "accept_url": accept_url,
+                "expires_at": invite.expires_at,
+            },
+        )
         return Response({'invite_link': accept_url, 'email': invite.email, 'expires_at': invite.expires_at}, status=status.HTTP_201_CREATED)
 
 
@@ -292,3 +331,42 @@ class DeleteAccountView(generics.DestroyAPIView):
         return Response({
             "message": f"Account {user_email} deleted successfully from tenant {tenant_slug}."
         }, status=status.HTTP_200_OK)
+
+class SendVerificationEmailView(APIView):
+    """Send OTP email for verification."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+
+        if user.email_verified:
+            return Response({"detail": "Email already verified."}, status=status.HTTP_400_BAD_REQUEST)
+
+        otp = user.generate_otp()
+
+        send_html_email(
+            subject="Verify Your Email",
+            to_email=user.email,
+            template_name="accounts/email/verify_email.html",
+            context={"user": user, "otp": otp},
+        )
+
+        return Response({"detail": "Verification OTP sent to your email."}, status=status.HTTP_200_OK)
+
+
+class VerifyEmailOTPView(APIView):
+    """Verify OTP for email verification."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        otp = request.data.get("otp")
+
+        if not otp:
+            return Response({"error": "OTP is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        if user.verify_otp(otp):
+            return Response({"detail": "Email verified successfully."}, status=status.HTTP_200_OK)
+
+        return Response({"error": "Invalid or expired OTP."}, status=status.HTTP_400_BAD_REQUEST)
+    

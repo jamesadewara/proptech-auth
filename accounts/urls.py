@@ -1,9 +1,10 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
-from .views import GoogleSocialLoginView, InviteAcceptView, InviteCreateView, MeView, PasswordForgotView, PasswordResetView, RegisterTenantView, LogoutView, TenantTokenObtainPairView, DeleteAccountView, RemoveStaffView
+from .views import GoogleSocialLoginView, InviteAcceptView, InviteCreateView, MeView, PasswordForgotView, PasswordResetView, RegisterTenantView, LogoutView, SendVerificationEmailView, TenantTokenObtainPairView, DeleteAccountView, RemoveStaffView
 
 urlpatterns = [
     path('register/tenant/', RegisterTenantView.as_view(), name='register_tenant'),
+    path('verify/email', SendVerificationEmailView.as_view(), name='verify_email'),
     path('invite/create/', InviteCreateView.as_view(), name='invite_create'),
     path('invite/accept/', InviteAcceptView.as_view(), name='invite_accept'),
     path('social-login/google/', GoogleSocialLoginView.as_view(), name='google-social-login'),
