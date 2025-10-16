@@ -434,8 +434,8 @@ class PasswordForgotSerializer(serializers.Serializer):
     def create(self, validated_data):
         # create one-time token
         token_obj = PasswordResetToken.objects.create(user=self.user)
-        reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token_obj.token}"
-
+        reset_url = f"{settings.MAIN_WEBSITE_URL}/password/reset/?token={token_obj.token}"
+ 
         send_html_email(
             subject="Password Reset Request",
             to_email=self.user.email,

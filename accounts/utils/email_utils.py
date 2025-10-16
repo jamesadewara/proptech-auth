@@ -19,13 +19,8 @@ def send_html_email(subject: str, to_email: str, template_name: str, context: di
         msg = EmailMultiAlternatives(subject, text_content, from_email, [to_email])
         msg.attach_alternative(html_content, "text/html")
 
-        # If in DEBUG mode -> print to console instead of sending
-        if getattr(settings, "DEBUG", True):
-            print(f"\n📧 [DEV MODE EMAIL]: {subject} -> {to_email}\n")
-            print(html_content)
-        else:
-            msg.send(fail_silently=False)
-            logger.info(f"✅ Email sent to {to_email} - {subject}")
+        msg.send(fail_silently=False)
+        logger.info(f"✅ Email sent to {to_email} - {subject}")
 
         return True
     except Exception as e:

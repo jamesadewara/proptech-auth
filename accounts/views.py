@@ -142,7 +142,7 @@ class InviteCreateView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         invite = serializer.save()
         # Send email in production. For dev, return token/url in response.
-        accept_url = f"{request.build_absolute_uri('/')}api/v1/invite/accept/?token={invite.token}"
+        accept_url = f"{settings.MAIN_WEBSITE_URL}/invite/accept/?token={invite.token}"
         send_html_email(
             subject="You're Invited to Join",
             to_email=invite.email,
@@ -366,6 +366,10 @@ class VerifyEmailOTPView(APIView):
 
         user = request.user
         if user.verify_otp(otp):
+            user.is_active = True
+            user.email_verified = True
+            user.email_otp = None
+            user.save(update_fields=['email_verified', 'email_otp', 'otp_expiry'])
             return Response({"detail": "Email verified successfully."}, status=status.HTTP_200_OK)
 
         return Response({"error": "Invalid or expired OTP."}, status=status.HTTP_400_BAD_REQUEST)

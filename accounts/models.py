@@ -67,7 +67,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     username = models.CharField(max_length=50, validators=[username_validator], unique=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='GUEST')
     profile_picture = models.ImageField(upload_to='profile_pics/', null=True, blank=True)
-    is_active = models.BooleanField(default=False)  # require email verification
+    is_active = models.BooleanField(default=True)  # require email verification
     is_staff = models.BooleanField(default=False)  # site admin (not tenant owner)
     date_joined = models.DateTimeField(auto_now_add=True)
     email_verified = models.BooleanField(default=False)
