@@ -21,9 +21,9 @@ This service integrates seamlessly with other PropTech microservices and follows
 - 📧 **Email Verification & Password Reset** — Custom HTML templates for all email workflows.  
 - 📨 **Invite System** — Tenants can invite staff and agents using verified email links.  
 - 🧱 **Role-Based Access Control (RBAC)** — Owner, Agent, Staff, and Client roles with scoped permissions.  
-- 💾 **SQLite (Dev), PostgreSQL (Main)** — Simple and scalable database environments.  
-- ☁️ **AWS S3 Storage** — For static and media file handling in production.  
-- 🌐 **Render Deployment** — Staging environment hosted on [Render](https://render.com).  
+- 💾 **SQLite (Dev), Render PostgreSQL (Staging) AWS RDS PostgreSQL (Main)** — Simple and scalable database environments.  
+- ☁️ **AWS S3 Storage for Main Production** — For static and media file handling in production.  
+- 🌐 **Render Deployment** — Staging environment hosted on [Render](https://proptech-auth.onrender.com).  
 - 🧭 **Postman Collection** — Explore all API endpoints with the link below.
 
 📄 **API Docs (Postman):**  
@@ -36,7 +36,7 @@ This service integrates seamlessly with other PropTech microservices and follows
 | Environment | Purpose | Hosting | Database | Storage | Notes |
 |--------------|----------|----------|-----------|-----------|--------|
 | **Development (Local)** | For local testing and debugging | Localhost | SQLite3 | Local static/media | Run with `python manage.py runserver` |
-| **Staging** | For pre-deployment testing | Render | SQLite3 / PostgreSQL (optional) | Local static/media | Auto-deploy from main branch |
+| **Staging** | For pre-deployment testing | Render |  PostgreSQL | Local static/media | Auto-deploy from main branch |
 | **Production (Main)** | Live environment | AWS EC2 | PostgreSQL | AWS S3 Bucket | Scalable and secured setup |
 
 ---
