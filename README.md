@@ -56,7 +56,7 @@ This service integrates seamlessly with other PropTech microservices and follows
 
 ### 1️⃣ Clone the Repository
 ```bash
-git clone https://github.com/<your-username>/proptech-auth.git
+git clone https://github.com/jamesadewara/proptech-auth.git
 cd proptech-auth
 ````
 
@@ -98,23 +98,6 @@ python manage.py runserver
 ```
 
 Access at **[http://127.0.0.1:8000/](http://127.0.0.1:8000/)**
-
----
-
-## ☁️ Deployment
-
-### 🔹 Staging (Render)
-
-* Deploy directly from your GitHub repository.
-* Configure environment variables under Render’s "Environment" tab.
-* Use Render’s free PostgreSQL instance or SQLite for quick testing.
-
-### 🔹 Production (AWS EC2)
-
-* Configure `nginx + gunicorn` for serving the Django app.
-* Use `PostgreSQL` (via Amazon RDS or managed instance).
-* Use AWS S3 for static and media files.
-* Set environment variables via `.env` or system environment.
 
 ---
 
