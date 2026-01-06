@@ -1,0 +1,8 @@
+{% extends "accounts/email/base.html" %}
+{% block title %}Verify Your Email{% endblock %}
+
+{% block content %}
+<h2>Hello {{ user.username }},</h2>
+<p>Your OTP code is: <strong>{{ otp }}</strong></p>
+<p>This code will expire in 10 minutes.</p>
+{% endblock %}
